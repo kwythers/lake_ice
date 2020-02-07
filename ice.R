@@ -4,9 +4,16 @@
 
 library(tidyverse)
 library(magrittr)
+library(glue)
 library(tsibble)
 library(timetk)
+library(tidyquant)
+library(tibbletime)
 library(lubridate)
+library(cowplot)
+library(recipes)
+library(rsample)
+library(yardstick) 
 library(dataRetrieval)
 library(withr)
 library(RODBC)
@@ -19,7 +26,10 @@ library(forecast)
 library(dygraphs)
 library(janitor)
 library(sweep)
-library(tidyquant)
+library(keras)
+library(tfruns)
+
+##########################################################################################
 
 ######################################################
 #####    Connect to CORE_WU using ODCconnect    #####
@@ -49,17 +59,19 @@ v_wu_lake <- as.tibble(sqlQuery(deltaw, '
 odbcClose(deltaw)
 
 # read in ice data 
-lake_ice_in_all_09_2019 <- read.table("H:/projects/Climate Change/ice/lake_ice_in_all_09_2019.txt",  header = FALSE, 
-                                      sep = ";", quote = "\"", colClasses = c(V1 = "character"))
-lake_ice_out_all_09_2019 <- read.table("H:/projects/Climate Change/ice/lake_ice_out_all_09_2019.txt",  header = FALSE, 
-                                       sep = ";", quote = "\"", colClasses = c(V1 = "character"))
+lake_ice_in_all_09_2019 <- read.table("H:/projects/Climate Change/ice/lake_ice_in_all_09_2019.txt",  
+                                      header = FALSE, sep = ";", quote = "\"", 
+                                      colClasses = c(V1 = "character"))
+lake_ice_out_all_09_2019 <- read.table("H:/projects/Climate Change/ice/lake_ice_out_all_09_2019.txt",  
+                                       header = FALSE, sep = ";", quote = "\"", 
+                                       colClasses = c(V1 = "character"))
 
 # read in lake centroids 
 dowlakes_centroids_dnr <- read_sf("R:/surface_water/dowlakes_centroids_dnr.shp")
 names(dowlakes_centroids_dnr)
 crs(dowlakes_centroids_dnr)
 st_crs(dowlakes_centroids_dnr)
-
+##########################################################################################
 # lower case
 v_wu_lake <- clean_names(v_wu_lake)
 lake_ice_in_all_09_2019 <- clean_names(lake_ice_in_all_09_2019)
@@ -74,7 +86,8 @@ dowlakes_centroids_dnr <- clean_names(dowlakes_centroids_dnr)
 
 # trim down v_wu_lake
 v_wu_lake <- v_wu_lake %>% 
-  dplyr::select(wid, wu_name, alt_name, depth_mean_ft, depth_max_ft, area_acres, ecoregion_code)
+  dplyr::select(wid, wu_name, alt_name, depth_mean_ft, depth_max_ft, area_acres, 
+                ecoregion_code)
 
 # trim dowlakes_centroids_dnr
 dowlakes_centroids_dnr <- dowlakes_centroids_dnr %>% 
@@ -301,7 +314,7 @@ mn_ice_50_trimmed2 <- mn_ice_50_trimmed %>%
 mn_ice_50_trimmed2$duration <- as.numeric(mn_ice_50_trimmed2$duration)
 
 mn_ice_50_trimmed2_ts <- tk_ts(mn_ice_50_trimmed2, start = 1925, frequency = 1, silent = TRUE)
-has_timetk_idx(mn_ice_50_trimmed_ts)  
+has_timetk_idx(mn_ice_50_trimmed2_ts)  
 
 ##### ets model
 fit_ets <- mn_ice_50_trimmed2_ts %>% 
@@ -416,18 +429,81 @@ fit_auto %>%
 checkresiduals(fit_auto)
 fit_auto %>% forecast(h = 10) %>% autoplot()
 
-
 mn_ice_50_trimmed2_ts %>%
   Arima(order=c(0,1,1), seasonal=c(0,1,1)) %>%
   residuals() %>% ggtsdisplay()
 
-
 # create univariate ts
-univar_lakeice_ts <- ts(mn_ice_50_trimmed2$duration, start = 1925, end = 2019, frequency = 1) 
+univar_lakeice_ts <- ts(mn_ice_50_trimmed$duration, start = 1919, end = 2019, frequency = 1) 
 plot(univar_lakeice_ts)
-# decompose the ts
-univar_lakeice_ts_deseasonal <- seasadj(univar_lakeice_ts) 
-plot(rainfall_deseasonal1)
+
+##### LSTM and Keras #####
+# clean up and remove recoreds prior to 1899
+mn_ice_50trimmed_1899 <- mn_ice_50_trimmed %>% 
+  rename(duration = `mean(ice_on_duration)`) %>% 
+  mutate(date = make_date(waterYear)) %>% 
+  dplyr::select(-waterYear) %>% 
+  filter(date >= '1899-01-01')
+mn_ice_50trimmed_1899$duration <- as.numeric(mn_ice_50trimmed_1899$duration)
+
+# mn_ice_50trimmed_1899_ts <- tk_ts(mn_ice_50trimmed_1899, start = 1899, frequency = 1, silent = TRUE)
+# has_timetk_idx(mn_ice_50trimmed_1899_ts)
+
+# convert ts to time tibble
+mn_ice_ttbl <- mn_ice_50trimmed_1899 %>%
+  dplyr::select(date, duration) %>% 
+  as_tbl_time(index = date)
+  
+# visualize with cowplot
+p1 <- mn_ice_ttbl %>%
+  ggplot(aes(date, duration)) +
+  geom_point(color = palette_light()[[1]], alpha = 0.5) +
+  theme_tq() +
+  labs(
+    title = "Ice cover (days)"
+  )
+
+p2 <- mn_ice_ttbl %>%
+  filter_time("1999" ~ "2019") %>%
+  ggplot(aes(date, duration)) +
+  geom_line(color = palette_light()[[1]], alpha = 0.5) +
+  geom_point(color = palette_light()[[1]]) +
+  geom_smooth(method = "loess", span = 0.2, se = FALSE) +
+  theme_tq() +
+  labs(
+    title = "1999 to 2019 (Zoomed In)",
+    caption = "Minnesota Lake Ice"
+  )
+
+p_title <- ggdraw() + 
+  draw_label("????", size = 18, fontface = "bold", 
+             colour = palette_light()[[1]])
+
+plot_grid(p_title, p1, p2, ncol = 1, rel_heights = c(0.1, 1, 1))
+
+periods_train <- 1 * 20
+periods_test  <- 1 * 10
+skip_span     <- 1 * 22 - 1
+
+rolling_origin_resamples <- rolling_origin(
+  sun_spots,
+  initial    = periods_train,
+  assess     = periods_test,
+  cumulative = FALSE,
+  skip       = skip_span
+)
+
+rolling_origin_resamples
+
+
+
+
+
+# # decompose the ts
+# univar_lakeice_ts_deseasonal <- seasadj(univar_lakeice_ts) 
+# plot(rainfall_deseasonal1)
+
+
 
 ##### nest the 16 lakes data by lake ####
 lake_ice_16_nest <- lake_ice_50_trimmed %>% 
