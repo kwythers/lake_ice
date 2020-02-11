@@ -341,8 +341,11 @@ lake_ice_16_nest <- lake_ice_16_nest %>%
 
 lake_ice_16_nest$lake_plots[3]
 
+##### ##### ##### ##### ##### ##### ##### ##### ##### ##### ##### #####
+##### ETS and ARIMA forecasting        
+##### ##### ##### ##### ##### ##### ##### ##### ##### ##### ##### #####
 
-###### convert mn_ice_50_trimmed to ts and reevaluate with forcast
+##### convert mn_ice_50_trimmed to ts and reevaluate with forcast #####
 mn_ice_50_trimmed$waterYear
 
 # clean up and remove recoreds prior to 1925
