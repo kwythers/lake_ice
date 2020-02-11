@@ -310,7 +310,37 @@ ggplot(mn_ice_50_trimmed, aes(x = waterYear, y = `mean(ice_on_duration)`)) +
   xlim(1950, 2020) +
   ylab('lake ice (days)') +
   xlab('Year') +
-  ggtitle('State wide lake ice duration')
+  ggtitle('All 16 lakes: ice duration')
+
+##### nest the 16 lakes data by lake ####
+lake_ice_16_nest <- lake_ice_50_trimmed %>% 
+  group_by(lake_id, lake_id_mpca, wu_name, record_length, latddnad83, londdnad83) %>% 
+  mutate(lat = latddnad83, lon = londdnad83) %>% 
+  nest() %>% 
+  rename(lake_name = wu_name) %>% 
+  dplyr::select(lake_id, lake_id_mpca, lake_name, record_length, latddnad83, londdnad83, data) %>% 
+  arrange(desc(record_length))
+lake_ice_16_nest
+
+lake_ice_16_nest <- lake_ice_16_nest %>% 
+  mutate(
+    lake_plots = map2(data, lake_name, ~ ggplot(data = .x, aes(x = waterYear, y = ice_on_duration)) + 
+                        geom_line() + 
+                        geom_point() + 
+                        geom_smooth(method = "lm", se = FALSE) +
+                        xlim(1950, 2020) +
+                        ylab('lake ice (days)') +
+                        xlab('Year') +
+                        ggtitle(.y)
+                      # geom_abline(intercept = watershed_intercept, slope = watershed_slope, color = 'orange')
+                      # geom_abline(intercept = tobit_model$coefficients, slope = tobit_model$coefficients[2], color = 'green') 
+                      # ggtitle(label = loc_major_basin)
+                      # ggtitle('Minnesota stream Secchi tube measures')
+    )
+  )
+
+lake_ice_16_nest$lake_plots[3]
+
 
 ###### convert mn_ice_50_trimmed to ts and reevaluate with forcast
 mn_ice_50_trimmed$waterYear
@@ -390,6 +420,7 @@ sw_sweep(fcast_ets, timetk_idx = TRUE) %>%
 sw_sweep(fcast_ets, timetk_idx = TRUE) %>%
   tail()
 
+#plot with years on x axis
 sw_sweep(fcast_ets, timetk_idx = TRUE) %>%
   ggplot(aes(x = index, y = duration, color = key)) +
   geom_ribbon(aes(ymin = lo.95, ymax = hi.95), 
@@ -444,8 +475,8 @@ mn_ice_50_trimmed2_ts %>%
   residuals() %>% ggtsdisplay()
 
 # create univariate ts
-univar_lakeice_ts <- ts(mn_ice_50_trimmed$duration, start = 1919, end = 2019, frequency = 1) 
-plot(univar_lakeice_ts)
+# univar_lakeice_ts <- ts(mn_ice_50_trimmed$duration, start = 1919, end = 2019, frequency = 1) 
+# plot(univar_lakeice_ts)
 
 ##### LSTM and Keras #####
 
@@ -505,10 +536,10 @@ plot_grid(p_title, p1, p2, ncol = 1, rel_heights = c(0.1, 1, 1))
 # procedure that uses the rolling_origin() function to create samples designed for time 
 # series cross validation
 
-# 100 year training set, 20 years testing set and overlapps
-periods_train <- 1 * 30
-periods_test  <- 1 * 15
-skip_span     <- 1 * 16 - 1
+# 30 year training set, 15 years testing set and overlapps
+periods_train <- 75
+periods_test  <- 25
+skip_span     <- 3
 
 rolling_origin_resamples <- rolling_origin(
   mn_ice_ttbl,
@@ -630,23 +661,19 @@ rolling_origin_resamples %>%
 # example_split4    <- rolling_origin_resamples$splits[[4]]
 # example_split_id4 <- rolling_origin_resamples$id[[4]]
 
-example_split <- rolling_origin_resamples$splits[[5]]
-example_split_id <- rolling_origin_resamples$id[[5]]
+example_split <- rolling_origin_resamples$splits[[6]]
+example_split_id <- rolling_origin_resamples$id[[6]]
 
 plot_split(example_split, expand_y_axis = FALSE, size = 0.5) +
   theme(legend.position = "bottom") +
   ggtitle(glue("Split: {example_split_id}"))
 
-# combine splits
-allsplits <- rolling_origin_resamples$splits[]
 
 # data set up
 # dedicate 2 thirds of the analysis set to training, and 1 third to validation
-df_trn <- analysis(example_split)[1:80, , drop = FALSE]
-df_val <- analysis(example_split)[81:120, , drop = FALSE]
+df_trn <- analysis(example_split)[1:75, , drop = FALSE]
+df_val <- analysis(example_split)[76:100, , drop = FALSE]
 df_tst <- assessment(example_split)
-
-
 
 # combine the training and testing data sets into a single data set with a column 
 # key that specifies where they came from (either “training” or “testing)” - note that 
@@ -749,7 +776,32 @@ train_matrix <-
 valid_matrix <-
   build_matrix(valid_vals, n_timesteps + n_predictions)
 test_matrix <- build_matrix(test_vals, n_timesteps + n_predictions)
-##### I think we need to re-transform to vaules above 0. 
+
+# separate matrices into training and testing parts
+# also, discard last batch if there are fewer than batch_size samples
+# (a purely technical requirement)
+X_train <- train_matrix[, 1:n_timesteps]
+y_train <- train_matrix[, (n_timesteps + 1):(n_timesteps * 2)]
+X_train <- X_train[1:(nrow(X_train) %/% batch_size * batch_size), ]
+y_train <- y_train[1:(nrow(y_train) %/% batch_size * batch_size), ]
+
+X_valid <- valid_matrix[, 1:n_timesteps]
+y_valid <- valid_matrix[, (n_timesteps + 1):(n_timesteps * 2)]
+X_valid <- X_valid[1:(nrow(X_valid) %/% batch_size * batch_size), ]
+y_valid <- y_valid[1:(nrow(y_valid) %/% batch_size * batch_size), ]
+
+X_test <- test_matrix[, 1:n_timesteps]
+y_test <- test_matrix[, (n_timesteps + 1):(n_timesteps * 2)]
+X_test <- X_test[1:(nrow(X_test) %/% batch_size * batch_size), ]
+y_test <- y_test[1:(nrow(y_test) %/% batch_size * batch_size), ]
+# add on the required third axis
+X_train <- reshape_X_3d(X_train)
+X_valid <- reshape_X_3d(X_valid)
+X_test <- reshape_X_3d(X_test)
+
+y_train <- reshape_X_3d(y_train)
+y_valid <- reshape_X_3d(y_valid)
+y_test <- reshape_X_3d(y_test)
 
 
 
@@ -846,15 +898,6 @@ lake_ice_16_nest <- lake_ice_16_nest %>%
 
 
 
-
-
-
-
-
-
-
-
-
 lake_ice_1975_means <- lake_ice_1975 %>% 
   group_by(waterYear) %>% 
   summarise(mean_ice_on_duration = mean(ice_on_duration) , n = n())
@@ -905,59 +948,14 @@ lake_ice_50 <- lake_ice_50 %>%
 ##### ##### ##### #####
 
 
-lake_ice_long <- rbind(lake_ice_in, lake_ice_out) 
 
-lake_ice_long <- lake_ice_long %>% 
-  mutate(id = rownames(lake_ice_long)) %>% 
-  select(id, everything())
-
-lake_ice_short <- lake_ice_long %>% 
-  pivot_wider(names_from = measure, values_from = c(measure_date, year))
-
-z <- lake_ice %>% 
-  group_by(lake_id, measure, year) %>% 
-  summarise(mean = mean.Date(measure_date)) %>% 
-  rename(measure_date = mean) %>% 
-  drop_na()
 
   
 
-zz <- z %>% 
-  arrange(lake_id, measure_date) %>% 
-  group_by(lake_id) %>% 
-  mutate(prior = lag(measure_date, 1)) %>%
-  mutate(ice_cover = measure_date - lag(measure_date, 1)) %>% 
-  mutate(record_length = max(year) - min(year)) %>% 
-  select(lake_id, measure, year, prior, measure_date, ice_cover, record_length) %>% 
-  drop_na()
 
-zzz <- zz %>% 
-  filter(measure == 'ice_out')
   
   
 
-lake_ice <- lake_ice %>% 
-  mutate(year = year(measure_date))
-
-test <- read_csv("id, measure, measure_date
-1, start, 1998-10-3 
-2, start, 1998-11-12
-1, stop, 1999-5-1
-2, stop, 1999-5-25
-1, stop, 2000-4-15
-1, start, 1999-11-9
-2, stop, 2000-6-1
-2, start, 1999-12-1 ")
-
-test$measure_date <- test$measure_date %>% as_date('%Y-%m-%d')
-
-xxx <- test %>%
-  arrange(id, measure_date) %>%
-  group_by(id) %>%
-  mutate(prior = lag(measure_date, 1)) %>%
-  mutate(duration = measure_date - lag(measure_date, 1))
 
 
-test <- lake_ice %>% 
-  group_by(lake_id) %>% 
-  nest()
+
